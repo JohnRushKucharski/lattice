@@ -11,14 +11,13 @@ Nodes "subscribe" to upstream node(s) and upstream nodes "publish" outflows.
 All nodes are publishers (send flows downstream) intermediate and outlet nodes 
 are also subscribers (receive flows from other nodes). 
 '''
-
 from enum import Enum
 from dataclasses import dataclass, field
 from typing import Protocol, Self, Callable, Any, runtime_checkable
 
 import pandas as pd
 
-from lattice.reservoir import Reservoir
+from lattice.reservoir import Reservoir, BasicReservoir
 
 class Tag(str, Enum):
     '''
@@ -40,15 +39,18 @@ class Tag(str, Enum):
     OUTLET = 'outlet'
     '''Downstream most node (from which all flows leave the system).'''
 
+#TODO: add implementation for DIVERSION, TRANSFER, and PERFORMANCE nodes.
+
 @dataclass
 class Log:
     '''
     Stores node data for log entries.
     '''
-    headers: tuple[str] = ('',)
-    '''Log output headers.'''
-    data: list[Any] = field(default_factory=list)
+    records: list[Any] = field(default_factory=list)
     '''Simulation data.'''
+    headers: tuple[str] = field(default_factory=tuple)
+    # '''Log output headers.'''
+    # is_active: bool = False
 
     def logger(self, function: Callable[..., Any]) -> Callable[..., float]:
         '''
@@ -56,13 +58,17 @@ class Log:
         '''
         def wrapper(*args, **kwargs) -> float:
             output = function(*args, **kwargs)
-            self.data.append(output)
+            self.records.append(output)
             return output
         return wrapper
 
+    # def reset(self):
+    #     '''Resets log records.'''
+    #     self.records = []
+
     def to_dataframe(self) -> pd.DataFrame:
         '''Return log data as a pandas DataFrame.'''
-        return pd.DataFrame(self.data, columns=self.headers)
+        return pd.DataFrame(self.records, columns=self.headers)
 
 @runtime_checkable
 class Node(Protocol):
@@ -73,6 +79,12 @@ class Node(Protocol):
     '''Node tag.'''
     name: str
     '''Node name.'''
+
+    # @property
+    # def log(self) -> Log:
+    #     '''Return log object logging node data.'''
+    # def activate_log(self) -> None:
+    #     '''Activate log for node.'''
 
     def receive(self) -> float:
         '''Return inflows from upstream senders.'''
@@ -102,20 +114,27 @@ class Inflow(Node):
     '''
     Upstream most node, can create new inflows.
     '''
-    def __init__(self, input_data: list[float], name: str = '',
-                 starting_position: int = 0, log: None|Log = None,
-                 operations: Callable[[Node],float] = transfer_flow) -> None:
+    def __init__(self, input_data: list[float],
+                 name: str = '', starting_position: int = 0,
+                 operations: Callable[[Node],float] = transfer_flow,
+                 loop: bool = False) -> None:
         self.tag = Tag.INFLOW
         self.data = input_data
         self.name = name if name else self.tag.value
         self.__timestep = starting_position - 1
+        self.__operations = operations
+        self.__loop = loop
 
-        self.__operations = log.logger(operations) if log else operations
-        if log:
-            self.log = log
-            log.headers = self.output_headers()
+    def attach_log(self, log: Log) -> Log:
+        '''Modifies operations to include logging. Returns log headers.'''
+        self.__operations = log.logger(self.__operations)
+        log.headers = ('Inflow',)
+        return log
 
     def receive(self) -> float:
+        if (self.__timestep + 1 == len(self.data)
+            and self.__loop):
+            self.reset()
         self.__timestep += 1
         return self.data[self.__timestep]
 
@@ -128,29 +147,29 @@ class Inflow(Node):
         '''Reset node starting position for inflow to first timestep in data.'''
         self.__timestep = -1
 
-    def output_headers(self) -> tuple[str]:
-        '''Return log output headers.'''
-        return ('Inflow',)
-
 class Storage(Node, Subscriber):
     '''
     Node that can store inflows.
     '''
-    def __init__(self, reservoir: Reservoir = None, name: str = '',
-                 senders: None|set[Node] = None, log: None|Log = None) -> None:
+    def __init__(self, reservoir: Reservoir = BasicReservoir(),
+                 name: str = '', senders: None|set[Node] = None) -> None:
         self.tag = Tag.STORAGE
-        self.__reservoir = reservoir
+        self.reservoir = reservoir
         self.name = name if name else self.tag.value
         self.__senders = senders if senders else set()
+        self.__operations = reservoir.operate
 
-        self.__operations = log.logger(reservoir.operate) if log else reservoir.operate
-        if log:
-            self.log = log
-            log.headers = self.output_headers()
+    def attach_log(self, log: Log) -> Log:
+        '''Modifies operations to include logging.'''
+        self.__operations = log.logger(self.__operations)
+        log.records.append(self.reservoir.current_state)
+        log.headers = self.reservoir.output_headers()
+        return log
 
+    @property
     def volume(self) -> float:
         '''Return current stored volume at the node.'''
-        return self.__reservoir.storage
+        return self.reservoir.storage
 
     def receive(self) -> float:
         return sum(sender.send() for sender in self.senders())
@@ -167,36 +186,36 @@ class Storage(Node, Subscriber):
     def remove_sender(self, sender: Node) -> None:
         self.__senders.remove(sender)
 
-    def output_headers(self) -> tuple[str]:
-        '''Return log output headers.'''
-        return ('Inflow', 'Storage', 'Release')
+    def reset(self, storage: float) -> None:
+        '''
+        Reset storage to a new initial condition.
+        '''
+        self.reservoir.storage = storage
 
 class Outlet(Node, Subscriber):
     '''Node that sends flow out of the system.'''
     def __init__(self, name: str = '',
-                 senders: None|set[Node] = None, log: None|Log = None) -> None:
+                 senders: None|set[Node] = None) -> None:
         self.tag = Tag.OUTLET
         self.name = name if name else self.tag.value
         self.__senders = senders if senders else set()
+        self.__operations = transfer_flow
 
-        self.__send_method = log.logger(transfer_flow) if log else transfer_flow
-        if log:
-            self.log = log
-            log.headers = self.output_headers()
+    def attach_log(self, log: Log) -> Log:
+        '''Modifies operations to include logging.'''
+        self.__operations = log.logger(self.__operations)
+        log.headers = ('Outflow',)
+        return log
 
     def receive(self) -> float:
         # needs to only be inflows in .send() call.
         return sum(sender.send() for sender in self.senders())
 
     def send(self) -> float:
-        return self.__send_method(self)
+        return self.__operations(self)
     def senders(self) -> set[Node]:
         return self.__senders
     def add_sender(self, sender: Node) -> None:
         self.__senders.add(sender)
     def remove_sender(self, sender: Node) -> None:
         self.__senders.remove(sender)
-
-    def output_headers(self) -> tuple[str]:
-        '''Return log output headers.'''
-        return ('Outflow',)

@@ -55,23 +55,27 @@ Graphically: this system looks like this:
                         |               |
                      InflowNode2     InflowNode3
 '''
+import copy
 
-from lattice.node import Node, Tag
+from lattice.node import Node, Log, Tag
 
-type Links = list[tuple[int, int]]
-type Layer = list[Node|list[Node]]
-type Diagram = list[Layer]
+# type Links = list[tuple[int, int]]
+# type DraftLayer = list[Node|list[Node]]
+# type DraftDiagram = list[DraftLayer]
+# type Layer = tuple[Node|tuple[Node,...],...]
+# type Diagram = tuple[Layer,...]
 
-def link_diagram(diagram: Diagram) -> Diagram:
+def link_diagram(diagram: list[list[Node|list[Node]]]) -> list[list[Node|list[Node]]]:
     '''
     Checks diagram structure and links sender-reciever nodes.
     '''
     for i in range(len(diagram)-1):
         cxns = process_outlet_layer(diagram[i]) if i == 0 else process_middle_layer(diagram[i])
         link_layers(diagram[i], diagram[i+ 1], cxns)
+    validate_inflow_layer(diagram[-1])
     return diagram
 
-def process_outlet_layer(layer: Layer) -> Links:
+def process_outlet_layer(layer: list[Node|list[Node]]) -> list[tuple[int, int]]:
     '''Validates first (outlet) layer of system diagram and returns its coonections.
     
     Returns:
@@ -98,7 +102,7 @@ def process_outlet_layer(layer: Layer) -> Links:
     # return ds, us position of nodes with cxns
     return [(0, 0)]
 
-def process_middle_layer(layer: Layer) -> Links:
+def process_middle_layer(layer: list[Node|list[Node]]) -> list[tuple[int, int]]:
     '''
     Validates intermediate or layer and 
     returns its connections to upstream nodes and groupd of nodes.
@@ -135,19 +139,26 @@ def process_middle_layer(layer: Layer) -> Links:
             process_node(element)
     return cxns
 
-def flatten_layer(layer: Layer) -> list[Node]:
+def flatten_layer(layer: list[Node|list[Node]]) -> list[Node]:
     '''
     Flattens layer of nodes and lists of nodes.
     '''
     nodes = []
     for element in layer:
-        if isinstance(element, list):
+        if isinstance(element, (list, tuple)):
+            if not all(isinstance(subelement, Node) for subelement in element):
+                raise ValueError('Invalid element in group. Only nodes are allowed.')
             nodes.extend(element)
-        else:
+        elif isinstance(element, Node):
             nodes.append(element)
+        else:
+            raise ValueError(f'''Invalid layer. Only nodes or groups of nodes allowed.
+                             {type(element)} found.''')
     return nodes
 
-def link_layers(ds: Layer, us: Layer, cxns: Links) -> None:
+def link_layers(ds: list[Node|list[Node]],
+                us: list[Node|list[Node]],
+                cxns: list[tuple[int, int]]) -> None:
     '''
     Links downstream and upstream nodes in adjacent layers.
 
@@ -172,11 +183,11 @@ def link_layers(ds: Layer, us: Layer, cxns: Links) -> None:
         ds_node = ds_flat[cxn[0]]
         if isinstance(us_part, list):
             for node in us_part:
-                node.add_sender(ds_node)
+                ds_node.add_sender(node)
         else:
-            us_part.add_sender(ds_node)
+            ds_node.add_sender(us_part)
 
-def validate_inflow_layer(layer: Layer) -> None:
+def validate_inflow_layer(layer: list[Node|list[Node]]) -> None:
     '''
     Validates inflow (last) layer of system diagram.
 
@@ -192,3 +203,108 @@ def validate_inflow_layer(layer: Layer) -> None:
                 A {node.tag.value} node found.
                 '''
             )
+
+def flatten_diagram(diagram: list[list[Node|list[Node]]]) -> tuple[Node,...]:
+    '''Creates a flat list of nodes from a system diagram.'''
+    nodes = []
+    for layer in diagram:
+        if not isinstance(layer, (list, tuple)):
+            raise ValueError('''Invalid diagram. Diagram must be composed of list of layers.''')
+        nodes.extend(flatten_layer(layer))
+    return tuple(nodes)
+
+def fix_diagram(diagram: list[list[Node|list[Node]]]) -> tuple[tuple[Node|tuple[Node,...],...],...]:
+    '''Fixes system diagram structure by converting lists to tuples.'''
+    _diagram = []
+    for layer in diagram:
+        _layer = []
+        for element in layer:
+            if isinstance(element, list):
+                _layer.append(tuple(element))
+            else:
+                _layer.append(element)
+        _diagram.append(tuple(_layer))
+    return tuple(_diagram)
+
+class System:
+    '''
+    A system is a collection of nodes that are connected in a specific way.
+    '''
+    def __init__(self, diagram: list[list[Node|list[Node]]]) -> None:
+        self.diagram = fix_diagram(link_diagram(diagram))
+        self.format_node_names() # sets unique names for nodes, modifies diagram in place.
+
+
+        #self.logs = {node: node.log for node in flatten_diagram(diagram) if not node.log is None}
+
+    def node_by_name(self, name: str) -> Node:
+        '''
+        Return node by name.
+        '''
+        for node in flatten_diagram(self.diagram):
+            if node.name == name:
+                return node
+        raise ValueError(f'Node {name} not found in system.')
+
+    def format_node_names(self) -> None:
+        '''
+        Format node names so no duplicates exist.
+        '''
+        names = []
+        dupes = []
+        for node in flatten_diagram(self.diagram):
+            i: int = 2 # original set to name + 1 later
+            name = node.name
+            while name in names:
+                if i == 2: # first pass
+                    dupes.append(name)
+                name = f'{node.name}_{i}'
+                i += 1
+            node.name = name
+            names.append(name)
+        # set original to name + 1
+        for name in dupes:
+            for node in flatten_diagram(self.diagram):
+                if node.name == name:
+                    node.name = f'{name}_1'
+
+    def add_logs(self, names: None|tuple[str,...]) -> dict[str, Log]:
+        '''
+        Adds logs to nodes in the system.
+        
+        Args:
+            names(tuple[str,...]): tuple of node names to add logs to.
+
+        Returns:
+            dict[str, Log]: node names (keys) and node logs (values).
+        '''
+        logs = {}
+        if names is None:
+            names = [node.name for node in flatten_diagram(self.diagram)]
+        for name in names:
+            node = self.node_by_name(name)
+            log = node.attach_log(Log())
+            logs[name] = log
+        return logs
+
+    def simulation(self, time_steps: int, log_nodes: None|tuple[str,...]=None) -> dict[str, Log]:
+        '''
+        Run the system and return the outflows from the outlet node.
+
+        Args:
+            time_steps(int): number of time steps to run the simulation.
+            log_nodes(None|tuple[str,...]): tuple of node names to log.
+                None by default, if None, all nodes are logged.
+
+        Returns:
+            dict[str, Log]: node names (keys) and node logs (values).
+        '''
+        # set up.
+        system = copy.deepcopy(self)
+        logs = system.add_logs(log_nodes)
+
+        # run simulation.
+        outlet = system.diagram[0][0]
+        for _ in range(time_steps):
+            outlet.send()
+        return logs
