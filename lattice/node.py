@@ -17,7 +17,8 @@ from typing import Protocol, Self, Callable, Any, runtime_checkable
 
 import pandas as pd
 
-from lattice.reservoir import Reservoir, BasicReservoir
+#from lattice.reservoir import Reservoir, BasicReservoir
+from canteen.reservoir import Reservoir, BasicReservoir
 
 class Tag(str, Enum):
     '''
@@ -31,15 +32,14 @@ class Tag(str, Enum):
     '''Stores inflows.'''
     DIVERSION = 'diversion'
     '''Divert inflows out of system.'''
-    TRANSFER = 'transfer'
+    RESCALE = 'rescale'
     '''Aggregate or rescale inflows.'''
     PERFORMANCE = 'performance'
     '''Compute performance metrics from inflows.'''
-
     OUTLET = 'outlet'
     '''Downstream most node (from which all flows leave the system).'''
 
-#TODO: add implementation for DIVERSION, TRANSFER, and PERFORMANCE nodes.
+#TODO: add implementation for DIVERSION, RESCALE, and PERFORMANCE nodes.
 
 @dataclass
 class Log:
@@ -49,8 +49,6 @@ class Log:
     records: list[Any] = field(default_factory=list)
     '''Simulation data.'''
     headers: tuple[str] = field(default_factory=tuple)
-    # '''Log output headers.'''
-    # is_active: bool = False
 
     def logger(self, function: Callable[..., Any]) -> Callable[..., float]:
         '''
@@ -61,10 +59,6 @@ class Log:
             self.records.append(output)
             return output
         return wrapper
-
-    # def reset(self):
-    #     '''Resets log records.'''
-    #     self.records = []
 
     def to_dataframe(self) -> pd.DataFrame:
         '''Return log data as a pandas DataFrame.'''
@@ -79,12 +73,6 @@ class Node(Protocol):
     '''Node tag.'''
     name: str
     '''Node name.'''
-
-    # @property
-    # def log(self) -> Log:
-    #     '''Return log object logging node data.'''
-    # def activate_log(self) -> None:
-    #     '''Activate log for node.'''
 
     def receive(self) -> float:
         '''Return inflows from upstream senders.'''
@@ -110,9 +98,11 @@ def transfer_flow(node: Node) -> float:
     '''
     return node.receive()
 
-class Inflow(Node):
+class Inflow: # Implements Node interface.
     '''
     Upstream most node, can create new inflows.
+    
+    Implments Node interface.
     '''
     def __init__(self, input_data: list[float],
                  name: str = '', starting_position: int = 0,
@@ -147,9 +137,11 @@ class Inflow(Node):
         '''Reset node starting position for inflow to first timestep in data.'''
         self.__timestep = -1
 
-class Storage(Node, Subscriber):
+class Storage: # Implements Node, Subscriber interfaces
     '''
     Node that can store inflows.
+    
+    Implements Node and Subscriber interfaces.
     '''
     def __init__(self, reservoir: Reservoir = BasicReservoir(),
                  name: str = '', senders: None|set[Node] = None) -> None:
@@ -157,7 +149,7 @@ class Storage(Node, Subscriber):
         self.reservoir = reservoir
         self.name = name if name else self.tag.value
         self.__senders = senders if senders else set()
-        self.__operations = reservoir.operate
+        self.__operations = reservoir.operations
 
     def attach_log(self, log: Log) -> Log:
         '''Modifies operations to include logging.'''
