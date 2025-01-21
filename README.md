@@ -68,7 +68,6 @@ complex_diagram = [
 This diagram represents the following system schematic with annotated with the expected simulation values from such a system:
 
 ```
-Complex digram expected simulation values at:
 layer 0:    outlet_node: 
             [0, 2, 2]
                 |
