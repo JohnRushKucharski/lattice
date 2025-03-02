@@ -1,8 +1,8 @@
 '''
 A few example systems for testing and demonstration purposes.
 '''
-
-from lattice.reservoir import BasicReservoir
+from canteen.reservoir import BasicReservoir
+#from lattice.reservoir import BasicReservoir
 from lattice.node import Inflow, Storage, Outlet
 
 simple_diagram = [
